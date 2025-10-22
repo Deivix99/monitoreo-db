@@ -66,18 +66,33 @@ LEFT JOIN f USING (tablespace_name)
 ORDER BY used_pct DESC NULLS LAST;
 
 -- d) TOP SQL por CPU
+-- TOP por CPU
 CREATE OR REPLACE VIEW vw_top_sql_cpu AS
 SELECT
-  sql_id,
-  parsing_schema_name,
-  executions,
-  cpu_time,                -- microsegundos
-  elapsed_time,            -- microsegundos
-  buffer_gets,
-  disk_reads,
-  SUBSTR(sql_text,1,1000) AS sql_text
-FROM v$sqlarea
-ORDER BY cpu_time DESC;
+  s.sql_id,
+  s.parsing_schema_name   AS owner,
+  s.executions,
+  ROUND(s.cpu_time     / 1e6, 2) AS cpu_sec,      -- microsegundos -> segundos
+  ROUND(s.elapsed_time / 1e6, 2) AS elapsed_sec,  -- microsegundos -> segundos
+  SUBSTR(s.sql_text,1,1000)      AS sql_text
+FROM v$sql s
+WHERE s.executions > 0
+ORDER BY s.cpu_time DESC
+FETCH FIRST 50 ROWS ONLY;
+
+-- TOP por tiempo transcurrido
+CREATE OR REPLACE VIEW vw_top_sql_elapsed AS
+SELECT
+  s.sql_id,
+  s.parsing_schema_name   AS owner,
+  s.executions,
+  ROUND(s.cpu_time     / 1e6, 2) AS cpu_sec,
+  ROUND(s.elapsed_time / 1e6, 2) AS elapsed_sec,
+  SUBSTR(s.sql_text,1,1000)      AS sql_text
+FROM v$sql s
+WHERE s.executions > 0
+ORDER BY s.elapsed_time DESC
+FETCH FIRST 50 ROWS ONLY;
 
 -- e) Sesiones activas de usuario
 CREATE OR REPLACE VIEW vw_active_sessions AS

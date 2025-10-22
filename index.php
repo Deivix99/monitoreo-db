@@ -23,6 +23,20 @@
     .spinner-sm { width:1rem; height:1rem; border-width:.15rem;}
     .sticky-controls { position:sticky; top:0; z-index:1000; background:rgba(248,249,250,.95); backdrop-filter:saturate(180%) blur(6px); }
     code { white-space:pre-wrap; }
+    /* --- Top 5: más separación y anchos fijos --- */
+#topSqlTable { table-layout: fixed; }              /* respeta anchos del colgroup */
+#topSqlTable th, #topSqlTable td {                 /* +espacio horizontal */
+  padding-left: 1.1rem;
+  padding-right: 1.1rem;
+}
+#topSqlTable col.sqlid   { width: 9rem; }
+#topSqlTable col.owner   { width: 9rem; }
+#topSqlTable col.execs   { width: 7rem; }
+#topSqlTable col.cpu     { width: 7rem; }
+#topSqlTable col.elapsed { width: 7rem; }
+/* No-wrap para que los numéricos y claves no se rompan */
+
+
   </style>
 </head>
 <body>
@@ -37,6 +51,7 @@
       <div class="d-flex gap-2 align-items-center">
         <div class="text-muted small">Actualiza en:</div>
         <select id="refreshSel" class="form-select form-select-sm" style="width:120px">
+          <option value="1000">1 s</option>
           <option value="10000">10 s</option>
           <option value="30000" selected>30 s</option>
           <option value="60000">1 min</option>
@@ -168,30 +183,53 @@
   </section>
 
   <!-- Top SQL -->
-  <section class="mt-4">
-    <div class="card border-0 shadow-sm">
-      <div class="card-header d-flex align-items-center justify-content-between">
-        <span><i class="bi bi-lightning-charge me-2"></i>Top 5 Consultas</span>
-        <ul class="nav nav-pills" id="sqlTabs">
-          <li class="nav-item"><button class="nav-link active" data-type="cpu">Por CPU</button></li>
-          <li class="nav-item"><button class="nav-link" data-type="elapsed">Por Tiempo</button></li>
-        </ul>
-      </div>
-      <div class="card-body">
-        <div id="topSqlAlert"></div>
-        <div class="table-responsive">
-          <table class="table table-sm align-middle">
-            <thead>
-              <tr><th>SQL_ID</th><th>Owner</th><th>Execs</th><th>CPU (s)</th><th>Elapsed (s)</th><th>SQL (300c)</th></tr>
-            </thead>
-            <tbody id="topSqlBody">
-              <tr><td colspan="6" class="text-center text-muted py-4"><div class="spinner-border spinner-sm me-2" role="status"></div>Cargando...</td></tr>
-            </tbody>
-          </table>
-        </div>
+  <!-- Top SQL -->
+<section class="mt-4">
+  <div class="card border-0 shadow-sm">
+    <div class="card-header d-flex align-items-center justify-content-between">
+      <span id="topSqlTitleText">
+        <i class="bi bi-lightning-charge me-2"></i>Top 5 Consultas — Por CPU
+      </span>
+      <ul class="nav nav-pills" id="sqlTabs">
+        <li class="nav-item"><button class="nav-link active" type="button" data-type="cpu">Por CPU</button></li>
+        <li class="nav-item"><button class="nav-link" type="button" data-type="elapsed">Por Tiempo</button></li>
+      </ul>
+    </div>
+    <div class="card-body">
+      <div id="topSqlAlert"></div>
+      <div class="table-responsive">
+        <table class="table table-sm align-middle" id="topSqlTable">
+          <colgroup>
+            <col class="sqlid">
+            <col class="owner">
+            <col class="execs">
+            <col class="cpu">
+            <col class="elapsed">
+            <col> <!-- SQL text: ocupa el resto -->
+          </colgroup>
+          <thead>
+            <tr>
+              <th class="text-start">SQL_ID</th>
+              <th class="text-start">Owner</th>
+              <th class="text-end">Execs</th>
+              <th class="text-end">CPU</th>
+              <th class="text-end">Elapsed</th>
+              <th class="text-start">SQL</th>
+            </tr>
+          </thead>
+          <tbody id="topSqlBody">
+            <tr>
+              <td colspan="6" class="text-center text-muted py-4">
+                <div class="spinner-border spinner-sm me-2" role="status"></div>Cargando...
+              </td>
+            </tr>
+          </tbody>
+        </table>
       </div>
     </div>
-  </section>
+  </div>
+</section>
+
 
   <!-- Conexiones e Inválidos -->
   <section class="mt-4">
@@ -473,28 +511,118 @@ async function loadBackup(){
   }
 }
 
-// ====== TOP SQL ======
-async function loadTopSQL(type='cpu'){
-  try{
-    clearAlert('#topSqlAlert');
-    const rows = await fetchJSON('api/top_sql.php?type='+type);
-    const tb = $('#topSqlBody'); tb.innerHTML='';
-    (rows||[]).slice(0,5).forEach(r=>{
-      const tr=document.createElement('tr');
-      tr.innerHTML = `
-        <td>${r.SQL_ID||''}</td>
-        <td>${r.OWNER||''}</td>
-        <td>${r.EXECUTIONS||0}</td>
-        <td>${r.CPU_SEC||''}</td>
-        <td>${r.ELAPSED_SEC||''}</td>
-        <td><code>${(r.SQL_TEXT||'').substring(0,300).replaceAll('<','&lt;')}</code></td>`;
-      tb.appendChild(tr);
-    });
-    if(!rows || !rows.length) $('#topSqlBody').innerHTML = `<tr><td colspan="6" class="text-center text-muted py-3">Sin datos</td></tr>`;
-  }catch(e){
-    setAlert('#topSqlAlert','No se pudo cargar Top SQL. '+e.message);
+/* ====== TOP SQL (filtrado CPU / Tiempo) — versión robusta/idempotente ====== */
+(() => {
+  const tabsRoot = document.getElementById('sqlTabs');
+  if (!tabsRoot) return; // si no existe el módulo, salir
+
+  // Estado global (no redeclarar si ya existe)
+  window.activeSqlTab = window.activeSqlTab || 'cpu';
+
+  const topSqlTitle  = document.getElementById('topSqlTitleText'); // opcional
+  const topSqlLabels = { cpu: 'Por CPU', elapsed: 'Por Tiempo' };
+
+  // Formateador ms/s/min
+  function fmtSecSmart(v) {
+    const n = Number(v);
+    if (!isFinite(n)) return '—';
+    if (n >= 60) return (n/60).toFixed(1) + ' m';
+    if (n >= 1)  return n.toFixed(1) + ' s';
+    if (n > 0)   return Math.max(1, Math.round(n*1000)) + ' ms';
+    return '0 ms';
   }
-}
+
+  // Toma la primera clave existente y convierte a segundos según factor
+  const pickSeconds = (row, pairs) => {
+    for (const [k, factor] of pairs) {
+      if (row[k] !== undefined && row[k] !== null) {
+        const n = Number(row[k]);
+        if (Number.isFinite(n)) return n * factor;
+      }
+    }
+    return null;
+  };
+
+  // Exponer (o reemplazar) la función global sin redeclarar
+  window.loadTopSQL = async function(type = window.activeSqlTab) {
+    type = (type === 'elapsed') ? 'elapsed' : 'cpu';
+    try {
+      clearAlert('#topSqlAlert');
+
+      // cache-buster para evitar respuestas cacheadas al alternar pestañas
+      const rows = await fetchJSON(`api/top_sql.php?type=${type}&_=${Date.now()}`);
+
+      const tb = document.getElementById('topSqlBody');
+      if (!tb) return;
+      tb.innerHTML = '';
+
+      (rows || []).slice(0, 5).forEach(r => {
+        const sqlId = r.SQL_ID ?? r.sql_id ?? '';
+        const owner = r.OWNER ?? r.owner ?? r.PARSING_SCHEMA_NAME ?? r.parsing_schema_name ?? '';
+        const execs = r.EXECUTIONS ?? r.executions ?? '';
+
+        // v$sql suele estar en microsegundos
+        const cpuSec = pickSeconds(r, [
+          ['CPU_SEC',1],['cpu_sec',1],['CPU_SECONDS',1],['cpu_seconds',1],
+          ['CPU_S',1],['cpu_s',1],['CPU_TIME_S',1],['cpu_time_s',1],
+          ['CPU_TIME_SEC',1],['cpu_time_sec',1],
+          ['CPU_TIME_MS',1/1000],['cpu_time_ms',1/1000],
+          ['CPU_TIME',1/1e6],['cpu_time',1/1e6]
+        ]);
+        const elapsedSec = pickSeconds(r, [
+          ['ELAPSED_SEC',1],['elapsed_sec',1],['ELAPSED_SECONDS',1],['elapsed_seconds',1],
+          ['ELAPSED_S',1],['elapsed_s',1],['ELAPSED_TIME_S',1],['elapsed_time_s',1],
+          ['ELAPSED_TIME_SEC',1],['elapsed_time_sec',1],
+          ['ELAPSED_TIME_MS',1/1000],['elapsed_time_ms',1/1000],
+          ['ELAPSED_TIME',1/1e6],['elapsed_time',1/1e6]
+        ]);
+
+        const sqlText = (r.SQL_TEXT ?? r.sql_text ?? '')
+          .slice(0, 300)
+          .replaceAll('<','&lt;');
+
+        tb.insertAdjacentHTML('beforeend', `
+          <tr>
+            <td>${sqlId}</td>
+            <td>${owner}</td>
+            <td class="text-end">${isFinite(Number(execs)) ? Number(execs).toLocaleString() : (execs ?? '')}</td>
+            <td class="text-end">${fmtSecSmart(cpuSec)}</td>
+            <td class="text-end">${fmtSecSmart(elapsedSec)}</td>
+            <td><code>${sqlText}</code></td>
+          </tr>
+        `);
+      });
+
+      if (!rows || !rows.length) {
+        tb.innerHTML = `<tr><td colspan="6" class="text-center text-muted py-3">Sin datos</td></tr>`;
+      }
+
+      if (topSqlTitle) {
+        topSqlTitle.innerHTML = `<i class="bi bi-lightning-charge me-2"></i>Top 5 Consultas — ${topSqlLabels[type]}`;
+      }
+      // mantener el estado visible para refreshAll()
+      window.activeSqlTab = type;
+
+    } catch (e) {
+      setAlert('#topSqlAlert', 'No se pudo cargar Top SQL. ' + e.message);
+    }
+  };
+
+  // Cablear pestañas una única vez
+  if (!tabsRoot.dataset.wired) {
+    tabsRoot.dataset.wired = '1';
+    tabsRoot.querySelectorAll('.nav-link').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        tabsRoot.querySelectorAll('.nav-link').forEach(x => x.classList.remove('active'));
+        const b = e.currentTarget;
+        b.classList.add('active');
+        window.activeSqlTab = (b.dataset.type === 'elapsed') ? 'elapsed' : 'cpu';
+        await window.loadTopSQL(window.activeSqlTab);
+      }, { passive: true });
+    });
+  }
+})();
+
 
 // ====== CONEXIONES ======
 async function loadConnections(){
@@ -571,11 +699,16 @@ async function refreshAll(){
 
 // Tabs Top SQL
 let activeSqlTab = 'cpu';
-document.querySelectorAll('#sqlTabs .nav-link').forEach(btn=>{
-  btn.addEventListener('click', async (e)=>{
-    document.querySelectorAll('#sqlTabs .nav-link').forEach(b=>b.classList.remove('active'));
-    e.target.classList.add('active');
-    activeSqlTab = e.target.dataset.type;
+const titleEl = document.getElementById('topSqlTitleText');
+const tabLabels = { cpu: 'Por CPU', elapsed: 'Por Tiempo' };
+
+document.querySelectorAll('#sqlTabs .nav-link').forEach(btn => {
+  btn.addEventListener('click', async (e) => {
+    const b = e.currentTarget;                 // botón clickeado
+    document.querySelectorAll('#sqlTabs .nav-link').forEach(x => x.classList.remove('active'));
+    b.classList.add('active');
+    activeSqlTab = b.dataset.type === 'elapsed' ? 'elapsed' : 'cpu';
+    if (titleEl) titleEl.innerHTML = `<i class="bi bi-lightning-charge me-2"></i>Top 5 Consultas — ${tabLabels[activeSqlTab]}`;
     await loadTopSQL(activeSqlTab);
   });
 });
