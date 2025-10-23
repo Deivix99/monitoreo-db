@@ -1,11 +1,11 @@
 <?php
-require __DIR__ . '/../config.php';
-require __DIR__ . '/db.php'; // el archivo donde tienes db_conn/db_all/db_exec
+require __DIR__ . '/lib/db.php';
+header('Content-Type: application/json; charset=utf-8');
 
 try {
-  $rows = db_all('SELECT 1 AS ok FROM dual');
-  echo "OK; SELECT 1 => " . $rows[0]['OK'] . PHP_EOL;
+  $r = db_all('SELECT 1 AS OK FROM DUAL');
+  echo json_encode(['ok' => true, 'result' => $r]);
 } catch (Throwable $e) {
   http_response_code(500);
-  echo "ERROR: " . $e->getMessage() . PHP_EOL;
+  echo json_encode(['ok' => false, 'error' => $e->getMessage()]);
 }
